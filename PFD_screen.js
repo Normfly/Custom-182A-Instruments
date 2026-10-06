@@ -4105,7 +4105,7 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
     }
 
     drawWind(ctx) {
-        if (this.windSpeed === 0 || this.isOnGround) return; // no wind or on the ground, no display
+        if (this.isOnGround) return; // on the ground, no display
 
         const textColor = "#fff";
 
@@ -4139,16 +4139,12 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
         // Calm wind: show "WIND" over "CALM"
         if (!this.windSpeed || Math.round(this.windSpeed) === 0) {
             ctx.save();
-            ctx.fillStyle = "#000";
-            ctx.fillRect(boxX, boxY, boxW, boxH);
-            ctx.strokeStyle = textColor;
-            ctx.strokeRect(boxX, boxY, boxW, boxH);
             ctx.fillStyle = textColor;
             ctx.font = "8px MSFS_LABEL";
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
-            ctx.fillText("WIND", cx, cy - 4);
-            ctx.fillText("CALM", cx, cy + 5);
+            ctx.fillText("WIND", arrowCX + 5, arrowCY - 6);
+            ctx.fillText("CALM", arrowCX + 5, arrowCY + 6);
             ctx.restore();
             return;
         }

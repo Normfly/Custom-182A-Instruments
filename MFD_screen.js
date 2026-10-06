@@ -53,6 +53,19 @@ class MFD_screen extends BaseInstrument {
         this.pfdPowered = true;
         this.mfdPowered = true;
 
+        // Smoothed wind display state (copied from PFD_screen)
+        this.windSampleIntervalMs = 500;     // sample twice per second
+        this.windAverageWindowMs = 15000;    // 15-second average
+        this.windSamples = [];               // [{ t, dir, spd }]
+        this.windDisplayDirection = 0;
+        this.windDisplaySpeed = 0;
+        this.windDirection = 0;
+        this.windSpeed = 0;
+        this._lastWindSampleMs = 0;
+        this.miscOption = -1;
+        this.windOption = 0;
+        this.isOnGround = false;
+
         this.stayOnOverride = false;
         this.shutdownDelayMs = 30000;
         this.shutdownActive = false;
@@ -353,8 +366,6 @@ class MFD_screen extends BaseInstrument {
             this.oatC = (typeof oatC === "number" && isFinite(oatC)) ? Math.round(oatC) : null;
 
             this.isOnGround = !!SimVar.GetSimVarValue("SIM ON GROUND", "Bool");
-            this.miscOption = SimVar.GetSimVarValue("L:PFD_Misc.1", "number") || 0;
-            this.windOption = SimVar.GetSimVarValue("L:PFD_Wind_Style.1", "number") || 0; // 0: <-MPH ^MPH, 1: DEG MPH, 2: \MPH
             this.updateSmoothedWind();
             this.windDirection = this.windDisplayDirection || 0;
             this.windSpeed = this.windDisplaySpeed || 0;
@@ -2758,20 +2769,6 @@ class MFD_screen extends BaseInstrument {
         }
     }
 
-    drawDegreeSymbol(ctx, x, y, radius = 3) {
-        ctx.save();
-        ctx.beginPath();
-        // Use the radius provided
-        ctx.arc(x, y, radius, 0, 2 * Math.PI);
-
-        ctx.strokeStyle = "#fff"; // White outline
-        ctx.lineWidth = 1.5;       // Set this to 0.5 for a very fine line
-        ctx.globalAlpha = 0.85;
-
-        ctx.stroke();             // STROKE instead of FILL makes it a ring
-        ctx.restore();
-    }
-
 
     drawHeadingBox(ctx, cx) {
         const boxW = 30, boxH = 36, boxY = 60;
@@ -3807,7 +3804,7 @@ class MFD_screen extends BaseInstrument {
 
     drawWindBox(ctx) {
         if (!ctx || !this.canvas) return;
-        if (!this.windSpeed || this.isOnGround) return; // no wind or on the ground, no display
+        if (this.isOnGround) return; // on the ground, no display
 
         const { boxX, boxY, boxW, boxH } = this._miscBoxGeometry();
         const textColor = "#fff";
