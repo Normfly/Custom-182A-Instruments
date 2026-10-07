@@ -183,11 +183,16 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
         this.isOnGround = true;
         this.knobLongPressTimer = null;
         this.knobLongPressFired = false;
+        // Hardware knob: swallow the short-press LVar the knob emits with/after a long press
+        this.knobShortSuppressMs = 2000;
+        this._knobShortSuppressUntil = 0;
         this.engineRunning = 0
         //--- Flight variables
         this.pitch = 0;
         this.bank = 0;
         this.baro = 29.92;
+        this.baroStd = false;        // explicit STD mode (not inferred from 29.92)
+        this.baroBeforeStd = 29.92;  // pressure to restore when leaving STD
         this.alt = 0;
         this.altitudeBug = 0; // PMS50 APGA selected altitude
         this.heading = 0;
@@ -866,6 +871,7 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
 
         let simBaro = Number(SimVar.GetSimVarValue("SEA LEVEL PRESSURE", "inHg"));
         this.baro = simBaro;
+        this.baroStd = false;
         SimVar.SetSimVarValue("K:KOHLSMAN_SET", "number", Math.round(simBaro * 33.8639 * 16));
 
         this.baroSyncDone = true;
@@ -1325,19 +1331,29 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
     }
 
     pollPFDKnobButtons() {
-        // Long press button, fires sync logic
+        const now = Date.now();
+        // Long press button, fires sync logic (or closes the menu)
         let btnLongVal = (typeof SimVar !== "undefined") ? SimVar.GetSimVarValue("L:PFD_KnobButtonLong", "number") || 0 : 0;
+        let longHandled = false;
         if (btnLongVal === 1) {
-            this.lastInteractionTime = Date.now(); // Reset Timer
-            this.handleKnobLongPress();
+            this.lastInteractionTime = now; // Reset Timer
             SimVar.SetSimVarValue("L:PFD_KnobButtonLong", "number", 0);
+            // The release of a long press can also raise the short-press LVar (same or a later
+            // poll cycle). Arm a one-shot suppression so it can't reopen the menu just closed.
+            this._knobShortSuppressUntil = now + this.knobShortSuppressMs;
+            longHandled = true;
+            this.handleKnobLongPress();
         }
-        // Short press button (future, if implemented)
+        // Short press button
         let btnShortVal = (typeof SimVar !== "undefined") ? SimVar.GetSimVarValue("L:PFD_KnobButtonShort", "number") || 0 : 0;
         if (btnShortVal === 1) {
-            this.lastInteractionTime = Date.now(); // Reset Timer
-            this.handleKnobShortPress();
+            this.lastInteractionTime = now; // Reset Timer
             SimVar.SetSimVarValue("L:PFD_KnobButtonShort", "number", 0);
+            if (longHandled || now < this._knobShortSuppressUntil) {
+                this._knobShortSuppressUntil = 0; // swallow only one short after a long
+            } else {
+                this.handleKnobShortPress();
+            }
         }
     }
 
@@ -1376,8 +1392,10 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
             this.knobLongPressFired = false;
             if (this.knobLongPressTimer) clearTimeout(this.knobLongPressTimer);
             this.knobLongPressTimer = setTimeout(() => {
-                this.handleKnobLongPress();
+                this.knobLongPressTimer = null;
+                // Mark fired first so release can never fall through to a short press
                 this.knobLongPressFired = true;
+                this.handleKnobLongPress();
                 this.Update && this.Update();
             }, 2000);
         }
@@ -1744,14 +1762,17 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
     }
 
     handleKnobLongPress() {
-        // If options menu is open, long press closes it
+        // If options menu (root or any submenu) is open, long press closes it entirely - no sync
         if (this.showOptions) {
             this.showOptions = false;
             this.optionsLevel = 0;
             this.optionsParent = "";
             this.optionsSel = 1;
+            this.optionsWindowStart = 0;
             this.optionsEditing = false;
             this.optionsEditKey = "";
+            this._optionsVisibleButtons = 3;
+            this.menuHistory = [];
             this._resetTouchLayout();
             this.Update();
             return;
@@ -1762,7 +1783,7 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
             SimVar.SetSimVarValue("L:PMS50_APGA_SELECTED_ALTITUDE", "feet", this.altitudeBug);
         }
         else if (this.touchSelected === 3) {
-            this.baro = 29.92;
+            this.enterBaroStd();
             SimVar.SetSimVarValue("KOHLSMAN SETTING HG", "inHg", this.baro);
         }
         else if (this.touchSelected === 4) {
@@ -1778,8 +1799,34 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
     }
 
     handleKnobShortPress() {
+        // Menu closed + BARO selected: toggle explicit STD mode. Otherwise open/select in the menu.
+        if (!this.showOptions && this.touchSelected === 3) {
+            if (this.baroStd) {
+                this.exitBaroStd();
+            } else {
+                this.enterBaroStd();
+            }
+            this.Update();
+            return;
+        }
         this.optionsClick();
         this.Update();
+    }
+
+    // Enter STD: remember current pressure, use standard 29.92 inHg (1013 hPa)
+    enterBaroStd() {
+        if (!this.baroStd) {
+            this.baroBeforeStd = this.baro;
+            this.baroStd = true;
+        }
+        this.baro = 29.92;
+    }
+
+    // Leave STD: restore the pressure that was set before entering STD
+    exitBaroStd() {
+        if (!this.baroStd) return;
+        this.baroStd = false;
+        this.baro = this.baroBeforeStd;
     }
 
     handleBaroKnob(delta) {
@@ -1804,6 +1851,9 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
     adjustBaro(delta) {
         let steps = Math.round(delta / 0.01) || Math.sign(delta) || 0;
         if (!steps) return;
+
+        // Manual adjustment leaves STD and continues from the standard setting
+        this.baroStd = false;
 
         if (this.baroMode === 1) {
             // Work in hPa so every knob click changes exactly 1 hPa
@@ -2855,7 +2905,9 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
 
         let baroStr = "----";
 
-        if (this.baroMode === 1) {
+        if (this.baroStd) {
+            baroStr = "STD";
+        } else if (this.baroMode === 1) {
             const hpa = this.baro * 33.8639;
             baroStr = `${Math.round(hpa)} hPa`;
         } else {
