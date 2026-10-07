@@ -180,6 +180,9 @@ class MFD_screen extends BaseInstrument {
         this.bearing2 = NaN;
         this.knobLongPressTimer = null;
         this.knobLongPressFired = false;
+        // Hardware knob: swallow the short-press LVar the knob emits with/after a long press
+        this.knobShortSuppressMs = 2000;
+        this._knobShortSuppressUntil = 0;
         this.touchedBox = null;
         this.knobHoldTimer = null;
         this.debugText = "TEST";
@@ -1978,18 +1981,28 @@ class MFD_screen extends BaseInstrument {
     }
 
     pollMFDKnobButton() {
+        const now = Date.now();
         // Long press logic
         let btnLongVal = (typeof SimVar !== "undefined") ? SimVar.GetSimVarValue("L:MFD_KnobButtonLong", "number") || 0 : 0;
+        let longHandled = false;
         if (btnLongVal === 1) {
-            this.handleKnobSyncRaw();
             SimVar.SetSimVarValue("L:MFD_KnobButtonLong", "number", 0);
+            // The release of a long press can also raise the short-press LVar (same or a later
+            // poll cycle). Arm a one-shot suppression so it can't reopen the menu just closed.
+            this._knobShortSuppressUntil = now + this.knobShortSuppressMs;
+            longHandled = true;
+            this.handleKnobSyncRaw();
         }
 
-        // Short press logic (future, if implemented)
+        // Short press logic
         let btnShortVal = (typeof SimVar !== "undefined") ? SimVar.GetSimVarValue("L:MFD_KnobButtonShort", "number") || 0 : 0;
         if (btnShortVal === 1) {
-            this.handleKnobShortPress();
             SimVar.SetSimVarValue("L:MFD_KnobButtonShort", "number", 0);
+            if (longHandled || now < this._knobShortSuppressUntil) {
+                this._knobShortSuppressUntil = 0; // swallow only one short after a long
+            } else {
+                this.handleKnobShortPress();
+            }
         }
     }
 
@@ -2121,9 +2134,12 @@ class MFD_screen extends BaseInstrument {
             this.knobPressBox = this.touchedBox.id;
             this.knobLongPressFired = false;
 
+            if (this.knobLongPressTimer) clearTimeout(this.knobLongPressTimer);
             this.knobLongPressTimer = setTimeout(() => {
-                this.handleKnobSyncRaw();
+                this.knobLongPressTimer = null;
+                // Mark fired first so release can never fall through to a short press
                 this.knobLongPressFired = true;
+                this.handleKnobSyncRaw();
                 this.Update();
             }, 2000);
 
