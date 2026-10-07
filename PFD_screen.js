@@ -188,6 +188,8 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
         this.pitch = 0;
         this.bank = 0;
         this.baro = 29.92;
+        this.baroStdActive = false;
+        this.baroBeforeStd = this.baro;
         this.alt = 0;
         this.altitudeBug = 0; // PMS50 APGA selected altitude
         this.heading = 0;
@@ -1325,18 +1327,18 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
     }
 
     pollPFDKnobButtons() {
-        // Long press button, fires sync logic
+        // Long press opens the root menu
         let btnLongVal = (typeof SimVar !== "undefined") ? SimVar.GetSimVarValue("L:PFD_KnobButtonLong", "number") || 0 : 0;
         if (btnLongVal === 1) {
             this.lastInteractionTime = Date.now(); // Reset Timer
             this.handleKnobLongPress();
             SimVar.SetSimVarValue("L:PFD_KnobButtonLong", "number", 0);
         }
-        // Short press button (future, if implemented)
+        // Consume a simultaneous short press without activating the newly opened menu
         let btnShortVal = (typeof SimVar !== "undefined") ? SimVar.GetSimVarValue("L:PFD_KnobButtonShort", "number") || 0 : 0;
         if (btnShortVal === 1) {
             this.lastInteractionTime = Date.now(); // Reset Timer
-            this.handleKnobShortPress();
+            if (btnLongVal !== 1) this.handleKnobShortPress();
             SimVar.SetSimVarValue("L:PFD_KnobButtonShort", "number", 0);
         }
     }
@@ -1376,8 +1378,9 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
             this.knobLongPressFired = false;
             if (this.knobLongPressTimer) clearTimeout(this.knobLongPressTimer);
             this.knobLongPressTimer = setTimeout(() => {
-                this.handleKnobLongPress();
+                this.knobLongPressTimer = null;
                 this.knobLongPressFired = true;
+                this.handleKnobLongPress();
                 this.Update && this.Update();
             }, 2000);
         }
@@ -1744,42 +1747,33 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
     }
 
     handleKnobLongPress() {
-        // If options menu is open, long press closes it
-        if (this.showOptions) {
-            this.showOptions = false;
-            this.optionsLevel = 0;
-            this.optionsParent = "";
-            this.optionsSel = 1;
-            this.optionsEditing = false;
-            this.optionsEditKey = "";
-            this._resetTouchLayout();
-            this.Update();
-            return;
-        }
-
-        if (this.touchSelected === 2) {
-            this.altitudeBug = Math.round(this.alt);
-            SimVar.SetSimVarValue("L:PMS50_APGA_SELECTED_ALTITUDE", "feet", this.altitudeBug);
-        }
-        else if (this.touchSelected === 3) {
-            this.baro = 29.92;
-            SimVar.SetSimVarValue("KOHLSMAN SETTING HG", "inHg", this.baro);
-        }
-        else if (this.touchSelected === 4) {
-            if (this.trkHold) {
-                this.trkSel = this.heading;
-                SimVar.SetSimVarValue("L:TRK_SEL", "number", this.trkSel);
-            } else {
-                this.headingBug = this.heading;
-                SimVar.SetSimVarValue("K:HEADING_BUG_SET", "degrees", Math.round(this.headingBug));
-            }
-        }
+        this.lastInteractionTime = Date.now();
+        this.showOptions = false;
+        this.optionsClick();
         this.Update();
     }
 
     handleKnobShortPress() {
-        this.optionsClick();
+        this.lastInteractionTime = Date.now();
+        if (this.showOptions) {
+            this.optionsClick();
+        } else {
+            if (this.baroStdActive) {
+                this.baro = this.baroBeforeStd;
+                this.baroStdActive = false;
+            } else {
+                this.baroBeforeStd = this.baro;
+                this.baro = 29.92;
+                this.baroStdActive = true;
+            }
+            this.syncBaroToSim();
+        }
         this.Update();
+    }
+
+    syncBaroToSim() {
+        SimVar.SetSimVarValue("K:KOHLSMAN_SET", "number", Math.round(this.baro * 33.8639 * 16));
+        SimVar.SetSimVarValue("L:PFD_BARO", "number", this.baro);
     }
 
     handleBaroKnob(delta) {
@@ -1805,6 +1799,7 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
         let steps = Math.round(delta / 0.01) || Math.sign(delta) || 0;
         if (!steps) return;
 
+        this.baroStdActive = false;
         if (this.baroMode === 1) {
             // Work in hPa so every knob click changes exactly 1 hPa
             let hpa = Math.round(this.baro * 33.8639);
@@ -1824,6 +1819,7 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
             this.baro = parseFloat(newBaro.toFixed(2));
         }
 
+        this.syncBaroToSim();
         this.Update();
     }
 

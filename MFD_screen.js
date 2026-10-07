@@ -189,6 +189,7 @@ class MFD_screen extends BaseInstrument {
         this.trackMag = 0;
         this.trkSel = 0;
         this.trkHold = false;
+        this.knobTrackSyncPending = null;
         this.crsSel = 0;
         this.hdgSel = 0;
         this.groundTrack = 0;
@@ -1981,20 +1982,34 @@ class MFD_screen extends BaseInstrument {
         // Long press logic
         let btnLongVal = (typeof SimVar !== "undefined") ? SimVar.GetSimVarValue("L:MFD_KnobButtonLong", "number") || 0 : 0;
         if (btnLongVal === 1) {
-            this.handleKnobSyncRaw();
+            this.handleKnobLongPress();
             SimVar.SetSimVarValue("L:MFD_KnobButtonLong", "number", 0);
         }
 
-        // Short press logic (future, if implemented)
+        // Consume a simultaneous short press without activating the newly opened menu
         let btnShortVal = (typeof SimVar !== "undefined") ? SimVar.GetSimVarValue("L:MFD_KnobButtonShort", "number") || 0 : 0;
         if (btnShortVal === 1) {
-            this.handleKnobShortPress();
+            if (btnLongVal !== 1) this.handleKnobShortPress();
             SimVar.SetSimVarValue("L:MFD_KnobButtonShort", "number", 0);
         }
     }
 
     handleKnobShortPress() {
+        this.lastInteractionTime = Date.now();
+        if (this.showOptions) {
+            this.OptionsClick();
+        } else {
+            this.handleKnobSyncRaw();
+        }
+        this.Update();
+    }
+
+    handleKnobLongPress() {
+        this.showOptions = false;
+        this.optionsEditing = false;
+        this.optionsEditKey = "";
         this.OptionsClick();
+        this.Update();
     }
 
     isTouchBoxEnabled(id) {
@@ -2121,9 +2136,11 @@ class MFD_screen extends BaseInstrument {
             this.knobPressBox = this.touchedBox.id;
             this.knobLongPressFired = false;
 
+            if (this.knobLongPressTimer) clearTimeout(this.knobLongPressTimer);
             this.knobLongPressTimer = setTimeout(() => {
-                this.handleKnobSyncRaw();
+                this.knobLongPressTimer = null;
                 this.knobLongPressFired = true;
+                this.handleKnobLongPress();
                 this.Update();
             }, 2000);
 
@@ -2217,6 +2234,7 @@ class MFD_screen extends BaseInstrument {
         if (!step) return;
 
         const newTrk = (this.trkSel + step + 360) % 360;
+        this.knobTrackSyncPending = null;
         this.trkSel = newTrk;
 
         // Drive the sim + keep your test hook coherent
@@ -2263,6 +2281,7 @@ class MFD_screen extends BaseInstrument {
             } else if (this.activeBox === "trk") {
                 if (this.trkHold) {
                     let newTrack = (this.trkSel + delta + 360) % 360;
+                    this.knobTrackSyncPending = null;
                     this.trkSel = newTrack;
                     if (typeof SimVar !== "undefined") SimVar.SetSimVarValue("L:TRK_SEL", "Number", newTrack);
                     window.testTrack = newTrack;
@@ -2562,47 +2581,19 @@ class MFD_screen extends BaseInstrument {
         return this.pages.indexOf(this.currentPage);
     }
 
-    // --- Unified SYNC LOGIC (track/course, raw data) ---
+    // --- Heading sync, with track-hold target aligned for followTRK ---
     handleKnobSyncRaw() {
-        // If options menu is open, long press closes it
-        if (this.showOptions) {
-            this.showOptions = false;
-            this.optionsLevel = 0;
-            this.optionsParent = "";
-            this.optionsScroll = 0;
-            this.optionsSelIndex = 1;
-            this.optionsEditing = false;
-            this.optionsEditKey = "";
-            this.menuHistory = [];
-            this.Update();
-            return;
+        this.heading = ((SimVar.GetSimVarValue("PLANE HEADING DEGREES MAGNETIC", "degrees") || 0) % 360 + 360) % 360;
+        this.headingBug = this.heading;
+        this.hdgSel = this.heading;
+        if (this.trkHold) {
+            // Use the same raw ground track as followTRK, including at low speed.
+            this.groundTrack = ((SimVar.GetSimVarValue("GPS GROUND MAGNETIC TRACK", "degrees") || 0) % 360 + 360) % 360;
+            this.trkSel = this.groundTrack;
+            this.knobTrackSyncPending = this.trkSel;
+            SimVar.SetSimVarValue("L:TRK_SEL", "Number", this.trkSel);
         }
-
-        if (this.activeBox === "trk") {
-            if (this.trkHold === 0) {
-                SimVar.SetSimVarValue("K:HEADING_BUG_SET", "number", this.heading);
-            } else {
-                this.trkSel = this.trackMag;
-                if (typeof SimVar !== "undefined") {
-                    SimVar.SetSimVarValue("L:TRK_SEL", "Number", this.trkSel);
-                }
-            }
-            
-        } else if (this.activeBox === "crs") {
-            if (this.selectedNavSource === "GPS") {
-                if (this.HdgTrk === 0) {
-                    this.crsSel = this.heading;
-                } else {
-                    this.crsSel = this.trackMag;
-                }
-                
-                if (typeof SimVar !== "undefined") {
-                    SimVar.SetSimVarValue("L:CRS_SEL", "Number", this.crsSel);
-                }
-            } else if (this.selectedNavSource === "VOR1" || this.selectedNavSource === "VOR2") {
-                this.centerVORCourseToStation();
-            }
-        }
+        SimVar.SetSimVarValue("K:HEADING_BUG_SET", "number", this.heading);
     }
 
     cycleNavSource() {
@@ -3394,6 +3385,14 @@ class MFD_screen extends BaseInstrument {
     }
 
     followTRK() {
+        if (this.knobTrackSyncPending !== null) {
+            // Do not command the old target while the sync LVar write is pending.
+            if (this.trkHold && Math.abs(this.trkSel - this.knobTrackSyncPending) > 0.001) {
+                this.trkSel = this.knobTrackSyncPending;
+                return;
+            }
+            this.knobTrackSyncPending = null;
+        }
         if (this.trkHold) {
             let drift = this.heading - this.groundTrack; // positive if crab left, negative if right
             // Normalize to [-180,180] to handle wrap
