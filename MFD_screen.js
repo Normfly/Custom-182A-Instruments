@@ -180,6 +180,7 @@ class MFD_screen extends BaseInstrument {
         this.bearing2 = NaN;
         this.knobLongPressTimer = null;
         this.knobLongPressFired = false;
+        this._ignoreKnobShortPressUntil = 0;
         this.touchedBox = null;
         this.knobHoldTimer = null;
         this.debugText = "TEST";
@@ -1994,6 +1995,10 @@ class MFD_screen extends BaseInstrument {
     }
 
     handleKnobShortPress() {
+        if (Date.now() <= this._ignoreKnobShortPressUntil) {
+            this._ignoreKnobShortPressUntil = 0;
+            return;
+        }
         this.OptionsClick();
     }
 
@@ -2574,6 +2579,7 @@ class MFD_screen extends BaseInstrument {
             this.optionsEditing = false;
             this.optionsEditKey = "";
             this.menuHistory = [];
+            this._ignoreKnobShortPressUntil = Date.now() + 1000;
             this.Update();
             return;
         }

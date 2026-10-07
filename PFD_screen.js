@@ -39,6 +39,7 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
         super();
 
         this.knobLongPressFired = false;
+        this._ignoreKnobShortPressUntil = 0;
         this.engineRunning = 0
         this.isForcedStalled = false; // Add this for the custom lean misfire logic
         //--- Flight variables
@@ -188,6 +189,8 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
         this.pitch = 0;
         this.bank = 0;
         this.baro = 29.92;
+        this.baroStd = false;
+        this.baroBeforeStd = null;
         this.alt = 0;
         this.altitudeBug = 0; // PMS50 APGA selected altitude
         this.heading = 0;
@@ -1750,8 +1753,13 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
             this.optionsLevel = 0;
             this.optionsParent = "";
             this.optionsSel = 1;
+            this.optionsWindowStart = 0;
             this.optionsEditing = false;
             this.optionsEditKey = "";
+            this.menuHistory = [];
+            this._touchedOptionBtnIdx = null;
+            this._touchedBack = false;
+            this._ignoreKnobShortPressUntil = Date.now() + 1000;
             this._resetTouchLayout();
             this.Update();
             return;
@@ -1762,7 +1770,9 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
             SimVar.SetSimVarValue("L:PMS50_APGA_SELECTED_ALTITUDE", "feet", this.altitudeBug);
         }
         else if (this.touchSelected === 3) {
+            if (!this.baroStd) this.baroBeforeStd = this.baro;
             this.baro = 29.92;
+            this.baroStd = true;
             SimVar.SetSimVarValue("KOHLSMAN SETTING HG", "inHg", this.baro);
         }
         else if (this.touchSelected === 4) {
@@ -1778,6 +1788,25 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
     }
 
     handleKnobShortPress() {
+        if (Date.now() <= this._ignoreKnobShortPressUntil) {
+            this._ignoreKnobShortPressUntil = 0;
+            return;
+        }
+        if (!this.showOptions && this.touchSelected === 3) {
+            if (this.baroStd) {
+                this.baro = this.baroBeforeStd;
+                this.baroBeforeStd = null;
+                this.baroStd = false;
+                SimVar.SetSimVarValue("KOHLSMAN SETTING HG", "inHg", this.baro);
+            } else {
+                this.baroBeforeStd = this.baro;
+                this.baro = 29.92;
+                this.baroStd = true;
+                SimVar.SetSimVarValue("KOHLSMAN SETTING HG", "inHg", this.baro);
+            }
+            this.Update();
+            return;
+        }
         this.optionsClick();
         this.Update();
     }
@@ -1804,6 +1833,9 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
     adjustBaro(delta) {
         let steps = Math.round(delta / 0.01) || Math.sign(delta) || 0;
         if (!steps) return;
+
+        this.baroStd = false;
+        this.baroBeforeStd = null;
 
         if (this.baroMode === 1) {
             // Work in hPa so every knob click changes exactly 1 hPa
@@ -2855,7 +2887,9 @@ class PFD_screen extends (typeof BaseInstrument !== "undefined" ? BaseInstrument
 
         let baroStr = "----";
 
-        if (this.baroMode === 1) {
+        if (this.baroStd) {
+            baroStr = "STD";
+        } else if (this.baroMode === 1) {
             const hpa = this.baro * 33.8639;
             baroStr = `${Math.round(hpa)} hPa`;
         } else {
