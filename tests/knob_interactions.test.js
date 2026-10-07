@@ -257,6 +257,17 @@ test("PFD manual BARO adjustment exits STD and adjusts from standard", () => {
     assert.strictEqual(p.baro, 29.93);
 });
 
+test("PFD manual BARO adjustment in hPa exits STD and steps from 1013 hPa", () => {
+    const { inst: p } = pfd();
+    p.baroMode = 1;
+    p.baro = 1020 / 33.8639;
+    p.handleKnobShortPress();
+    assert.strictEqual(drawnBaro(p), "STD");
+    p.handleKnobDelta(-1, "small");
+    assert.strictEqual(p.baroStd, false);
+    assert.strictEqual(drawnBaro(p), "1012 hPa");
+});
+
 test("PFD long press BARO enters STD coherently, keeping remembered pressure", () => {
     const { inst: p, env } = pfd();
     p.baro = 29.75;
